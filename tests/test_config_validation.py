@@ -1,6 +1,8 @@
+import tempfile
 import unittest
+from pathlib import Path
 
-from chirp.config_manager import ChirpConfig
+from chirp.config_manager import ChirpConfig, ConfigManager
 
 
 class TestConfigValidation(unittest.TestCase):
@@ -39,6 +41,18 @@ class TestConfigValidation(unittest.TestCase):
         conf = ChirpConfig(model_timeout=-1.0)
         with self.assertRaisesRegex(ValueError, "model_timeout must be non-negative"):
             conf.validate()
+
+    def test_validate_audio_capture_mode_invalid(self):
+        """Invalid audio_capture_mode should fail validation."""
+        conf = ChirpConfig(audio_capture_mode="magic")
+        with self.assertRaisesRegex(ValueError, "audio_capture_mode must be 'on_demand' or 'always_open'"):
+            conf.validate()
+
+    def test_from_dict_normalizes_audio_capture_mode(self):
+        """Hyphenated audio_capture_mode values should be normalized."""
+        conf = ChirpConfig.from_dict({"audio_capture_mode": "Always-Open"})
+        self.assertEqual(conf.audio_capture_mode, "always_open")
+        conf.validate()
 
     def test_validate_max_recording_duration_negative(self):
         """Negative max_recording_duration should fail validation."""
@@ -104,6 +118,33 @@ class TestConfigValidation(unittest.TestCase):
         conf.threads = 1  # fix threads
         with self.assertRaisesRegex(ValueError, r"paste_mode must be 'ctrl' or 'ctrl\+shift'"):
             conf.validate()
+
+
+class TestLocalConfig(unittest.TestCase):
+    def test_local_config_overrides_machine_settings_and_merges_words(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            base = root / "config.toml"
+            local = root / "config.local.toml"
+            base.write_text(
+                'preferred_mic = ""\n[word_overrides]\nbase = "base value"\n',
+                encoding="utf-8",
+            )
+            local.write_text(
+                'preferred_mic = "Desk microphone"\n[word_overrides]\nlocal = "local value"\n',
+                encoding="utf-8",
+            )
+            manager = ConfigManager()
+            manager._config_path = base
+            manager._local_config_path = local
+
+            config = manager.load()
+
+            self.assertEqual(config.preferred_mic, "Desk microphone")
+            self.assertEqual(
+                config.word_overrides,
+                {"base": "base value", "local": "local value"},
+            )
 
 
 if __name__ == "__main__":

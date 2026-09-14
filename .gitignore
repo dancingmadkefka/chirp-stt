@@ -187,6 +187,7 @@ data/
 !src/chirp/assets/*.ogg
 
 # Configuration and user data
+config.local.toml
 user_data/
 logs/
 *.log

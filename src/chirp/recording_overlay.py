@@ -46,6 +46,35 @@ def compute_top_center_geometry(
     return OverlayGeometry(width=width, height=height, x=x, y=y)
 
 
+def compute_cursor_adjacent_geometry(
+    cursor_x: int,
+    cursor_y: int,
+    *,
+    screen_x: int,
+    screen_y: int,
+    screen_width: int,
+    screen_height: int,
+    width: int = 168,
+    height: int = 30,
+    offset: int = 18,
+) -> OverlayGeometry:
+    left = screen_x
+    top = screen_y
+    right = screen_x + screen_width
+    bottom = screen_y + screen_height
+
+    x = cursor_x + offset
+    y = cursor_y + offset
+    if x + width > right:
+        x = cursor_x - width - offset
+    if y + height > bottom:
+        y = cursor_y - height - offset
+
+    x = min(max(x, left), max(left, right - width))
+    y = min(max(y, top), max(top, bottom - height))
+    return OverlayGeometry(width=width, height=height, x=x, y=y)
+
+
 if ctypes.sizeof(ctypes.c_void_p) == 8:
     LONG_PTR = ctypes.c_longlong
 else:
@@ -159,6 +188,10 @@ SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
 SWP_NOACTIVATE = 0x0010
 SM_CXSCREEN = 0
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
 ULW_ALPHA = 0x00000002
 AC_SRC_OVER = 0x00
 AC_SRC_ALPHA = 0x01
@@ -296,7 +329,7 @@ WNDPROC = ctypes.WINFUNCTYPE(
 
 class RecordingOverlay:
     _CLASS_NAME = "ChirpRecordingOverlay"
-    _TRANSCRIBING_LABEL = "Transcribing"
+    _RECORDING_LABEL = "Recording"
     _LOADING_LABEL = "Loading model"
     _BACKGROUND_COLOR = 0xFFF5F5F7
     _TEXT_COLOR = 0xFF111111
@@ -316,7 +349,7 @@ class RecordingOverlay:
         self._geometry: Optional[OverlayGeometry] = None
         self._dpi = 96
         self._mode = "transcribing"
-        self._label = self._TRANSCRIBING_LABEL
+        self._label = self._RECORDING_LABEL
         self._wndproc = WNDPROC(self._window_proc)
 
         if not self._enabled:
@@ -347,7 +380,7 @@ class RecordingOverlay:
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
-        self._label = self._LOADING_LABEL if mode == "loading" else self._TRANSCRIBING_LABEL
+        self._label = self._LOADING_LABEL if mode == "loading" else self._RECORDING_LABEL
         if self._enabled and self._hwnd:
             user32.PostMessageW(self._hwnd, WM_APP_SET_MODE, 0, 0)
 
@@ -420,15 +453,16 @@ class RecordingOverlay:
             self._render_layered_window()
             return 0
         if msg == WM_APP_SHOW:
+            self._position_near_cursor()
             self._render_layered_window()
             user32.SetWindowPos(
                 hwnd,
                 HWND_TOPMOST,
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                self._geometry.x if self._geometry else 0,
+                self._geometry.y if self._geometry else 0,
+                self._geometry.width if self._geometry else 0,
+                self._geometry.height if self._geometry else 0,
+                SWP_NOACTIVATE,
             )
             user32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
             return 0
@@ -442,6 +476,32 @@ class RecordingOverlay:
             user32.PostQuitMessage(0)
             return 0
         return user32.DefWindowProcW(hwnd, msg, w_param, l_param)
+
+    def _position_near_cursor(self) -> None:
+        if not self._hwnd:
+            return
+        point = POINT()
+        width = scale_dip(168, self._dpi)
+        height = scale_dip(30, self._dpi)
+        if user32.GetCursorPos(ctypes.byref(point)):
+            self._geometry = compute_cursor_adjacent_geometry(
+                point.x,
+                point.y,
+                screen_x=user32.GetSystemMetrics(SM_XVIRTUALSCREEN),
+                screen_y=user32.GetSystemMetrics(SM_YVIRTUALSCREEN),
+                screen_width=user32.GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                screen_height=user32.GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                width=width,
+                height=height,
+                offset=scale_dip(18, self._dpi),
+            )
+            return
+        self._geometry = compute_top_center_geometry(
+            user32.GetSystemMetrics(SM_CXSCREEN),
+            width=width,
+            height=height,
+            top_margin=0,
+        )
 
     def _render_layered_window(self) -> None:
         if not self._hwnd or not self._geometry:

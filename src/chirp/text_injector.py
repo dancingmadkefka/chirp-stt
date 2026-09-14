@@ -12,6 +12,8 @@ import pyperclip
 
 from .keyboard_shortcuts import KeyboardShortcutManager
 
+_FOCUS_SETTLE_DELAY = 0.12  # seconds
+
 
 @dataclass(slots=True)
 class StyleGuide:
@@ -66,8 +68,8 @@ class TextInjector:
         *,
         keyboard_manager: KeyboardShortcutManager,
         logger: logging.Logger,
-        injection_mode: str,
         paste_mode: str,
+        injection_mode: str = "type",
         word_overrides: Dict[str, str],
         post_processing: str,
         clipboard_behavior: bool,
@@ -108,7 +110,7 @@ class TextInjector:
         processed = self.process(text)
 
         if sys.platform.startswith("win") and self._injection_mode == "type":
-            time.sleep(0.12)  # Brief delay for focus settling
+            time.sleep(_FOCUS_SETTLE_DELAY)  # Brief delay for focus settling
             try:
                 self._keyboard.write(processed)
             except Exception as exc:  # pragma: no cover - runtime safety
@@ -121,7 +123,7 @@ class TextInjector:
         except pyperclip.PyperclipException as exc:  # pragma: no cover - clipboard edge cases
             self._logger.error("Clipboard copy failed: %s", exc)
             return
-        time.sleep(0.12)
+        time.sleep(_FOCUS_SETTLE_DELAY)
         try:
             combo = "ctrl+v" if self._paste_mode == "ctrl" else "ctrl+shift+v"
             self._keyboard.send(combo)

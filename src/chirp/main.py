@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
+import ctypes
 import logging
+import os
 import platform
+import sys
 import threading
 import time
-from typing import Optional, Sequence
+from ctypes import wintypes
+from typing import Generator, Optional, Sequence
 
 import numpy as np
 
 from rich.console import Console
 from rich.logging import RichHandler
 
-from .audio_capture import AudioCapture
+from .audio_capture import AudioCapture, find_input_devices
 from .audio_feedback import AudioFeedback
 from .config_manager import ConfigManager
 from .keyboard_shortcuts import KeyboardShortcutManager
@@ -21,6 +26,7 @@ from .logger import get_logger
 from .parakeet_manager import ModelNotPreparedError, ParakeetManager
 from .recording_overlay import RecordingOverlay, enable_dpi_awareness
 from .text_injector import TextInjector
+from .tray_icon import TrayIcon
 
 
 class ChirpApp:
@@ -47,7 +53,22 @@ class ChirpApp:
         )
 
         self.keyboard = KeyboardShortcutManager(logger=self.logger)
-        self.audio_capture = AudioCapture(status_callback=self._log_capture_status)
+        input_host_apis = (
+            ("WASAPI", "MME", "DirectSound")
+            if self.config.audio_capture_mode == "on_demand"
+            else ("WASAPI", "DirectSound", "MME")
+        )
+        input_devices = find_input_devices(
+            self.config.preferred_mic,
+            preferred_host_apis=input_host_apis,
+        )
+        input_device = input_devices[0] if input_devices else None
+        self.audio_capture = AudioCapture(
+            status_callback=self._log_capture_status,
+            device=input_device,
+            fallback_devices=input_devices,
+            keep_stream_open=self.config.audio_capture_mode == "always_open",
+        )
         self.audio_feedback = AudioFeedback(
             logger=self.logger,
             enabled=self.config.audio_feedback,
@@ -66,9 +87,28 @@ class ChirpApp:
         if not console:
             console = Console(stderr=True)
 
+        def _has_real_console() -> bool:
+            try:
+                return sys.stdout is not None and sys.stdout.isatty()
+            except Exception:
+                return False
+
         try:
             self.recording_overlay.show("loading")
-            with console.status("[bold green]Initializing Parakeet model...[/bold green]", spinner="dots"):
+            if _has_real_console():
+                with console.status("[bold green]Initializing Parakeet model...[/bold green]", spinner="dots"):
+                    self.parakeet = ParakeetManager(
+                        model_name=self.config.parakeet_model,
+                        quantization=self.config.parakeet_quantization,
+                        provider_key=self.config.onnx_providers,
+                        threads=self.config.threads,
+                        logger=self.logger,
+                        model_dir=model_dir,
+                        timeout=self.config.model_timeout,
+                        loading_state_callback=self._handle_model_loading_state,
+                    )
+            else:
+                self.logger.info("Initializing Parakeet model...")
                 self.parakeet = ParakeetManager(
                     model_name=self.config.parakeet_model,
                     quantization=self.config.parakeet_quantization,
@@ -99,16 +139,49 @@ class ChirpApp:
         self._lock = threading.Lock()
         self._stop_timer: Optional[threading.Timer] = None
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="Transcriber")
+        self._exit_event = threading.Event()
+        self._tray_thread: Optional[threading.Thread] = None
+        self._tray = TrayIcon(
+            logger=self.logger,
+            on_toggle=self.toggle_recording,
+            on_exit=self._request_exit,
+        )
 
     def run(self) -> None:
         try:
+            self.audio_capture.open()
             self._register_hotkey()
             self.logger.info("Chirp ready. Toggle recording with %s", self.config.primary_shortcut)
-            self.keyboard.wait()
+            if self._tray.enabled:
+                self._tray_thread = threading.Thread(
+                    target=self._tray.run,
+                    daemon=False,
+                    name="TrayIcon",
+                )
+                self._tray_thread.start()
+            # Block until exit is requested; keyboard.wait() doesn't work under pythonw.exe
+            self._exit_event.wait()
         except KeyboardInterrupt:
             self.logger.info("Interrupted, exiting.")
+        except Exception as exc:
+            self.logger.exception("Unhandled error in main loop: %s", exc)
+            self._write_crash_log(exc)
         finally:
-            self.recording_overlay.close()
+            self._shutdown()
+
+    @staticmethod
+    def _write_crash_log(exc: Exception) -> None:
+        import traceback as _tb
+        from pathlib import Path as _Path
+        try:
+            crash_path = _Path.home() / ".chirp" / "crash.log"
+            crash_path.parent.mkdir(exist_ok=True)
+            with open(crash_path, "a", encoding="utf-8") as f:
+                f.write(f"--- CRASH at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+                f.write(_tb.format_exc())
+                f.write("\n")
+        except Exception:
+            pass
 
     def _register_hotkey(self) -> None:
         self.logger.debug("Registering hotkey: %s", self.config.primary_shortcut)
@@ -157,9 +230,13 @@ class ChirpApp:
             self.audio_capture.start()
         except Exception as exc:
             self.logger.error("Audio capture start failed: %s", exc)
+            self._tray.notify_error(
+                "Could not open the microphone. Chirp is still running; try again or check the log."
+            )
             self.audio_feedback.play_error(self.config.error_sound_path)
             return
         self._recording = True
+        self._tray.set_recording(True)
         self.recording_overlay.show("transcribing")
         self.audio_feedback.play_start(self.config.start_sound_path)
         self.logger.info("Recording started")
@@ -181,19 +258,29 @@ class ChirpApp:
 
         self.logger.debug("Stopping audio capture")
         waveform = self.audio_capture.stop()
+        sample_rate = self.audio_capture.sample_rate
         self._recording = False
+        self._tray.set_recording(False)
         self.recording_overlay.hide()
         self.audio_feedback.play_stop(self.config.stop_sound_path)
         self.logger.info("Recording stopped (%s samples)", waveform.size)
-        self._executor.submit(self._transcribe_and_inject, waveform)
+        self._executor.submit(self._transcribe_and_inject, waveform, sample_rate)
 
-    def _transcribe_and_inject(self, waveform) -> None:
+    def _transcribe_and_inject(
+        self,
+        waveform: np.ndarray,
+        sample_rate: int = 16_000,
+    ) -> None:
         start_time = time.perf_counter()
         if waveform.size == 0:
             self.logger.warning("No audio samples captured")
             return
         try:
-            text = self.parakeet.transcribe(waveform, sample_rate=16_000, language=self.config.language)
+            text = self.parakeet.transcribe(
+                waveform,
+                sample_rate=sample_rate,
+                language=self.config.language,
+            )
         except Exception as exc:
             self.logger.exception("Transcription failed: %s", exc)
             self.audio_feedback.play_error(self.config.error_sound_path)
@@ -215,6 +302,80 @@ class ChirpApp:
         else:
             self.recording_overlay.hide()
 
+    def _request_exit(self) -> None:
+        self.logger.info("Exit requested from tray.")
+        self._exit_event.set()
+        self._tray.stop()
+
+    def _shutdown(self) -> None:
+        self.logger.info("Shutting down...")
+        with self._lock:
+            if self._recording:
+                try:
+                    self.audio_capture.stop()
+                except Exception:
+                    pass
+                self._recording = False
+            try:
+                self.audio_capture.close()
+            except Exception:
+                pass
+            if self._stop_timer:
+                self._stop_timer.cancel()
+                self._stop_timer = None
+        try:
+            self.recording_overlay.close()
+        except Exception:
+            pass
+        try:
+            self.keyboard.stop()
+        except Exception:
+            pass
+        self._tray.stop()
+        if self._tray_thread and self._tray_thread.is_alive():
+            self._tray_thread.join(timeout=2.0)
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        try:
+            self.parakeet.close()
+        except Exception:
+            pass
+        self.logger.info("Goodbye.")
+
+
+def _run_single_instance() -> contextlib.AbstractContextManager[None]:
+    """Ensure only one Chirp process is active.
+
+    Windows-specific mutex prevents duplicate startup from Task Scheduler/startup
+    triggers while still allowing deterministic process shutdown on exit.
+    """
+    if os.name != "nt":
+        return contextlib.nullcontext()
+
+    @contextlib.contextmanager
+    def _manager() -> Generator[None, None, None]:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.BOOL,
+            wintypes.LPCWSTR,
+        ]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        mutex = kernel32.CreateMutexW(None, False, "Local\\ChirpSingleInstance")
+        if not mutex:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() == 183:
+            kernel32.CloseHandle(mutex)
+            raise SystemExit("Chirp is already running")
+
+        try:
+            yield
+        finally:
+            kernel32.CloseHandle(mutex)
+
+    return _manager()
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -224,7 +385,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Usage:\n"
             "  uv run python -m chirp.setup   # one-time: download the Parakeet model files\n"
             "  uv run python -m chirp.main    # daily: start Chirp and use the configured hotkey\n\n"
-            "While Chirp is running, press your primary shortcut (default: win+alt+d)\n"
+            "While Chirp is running, press your configured shortcut (default: ctrl+shift)\n"
             "to toggle recording on and off."
         ),
     )
@@ -248,8 +409,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     if args.check:
         _run_smoke_check(verbose=args.verbose)
         return
-    app = ChirpApp(verbose=args.verbose)
-    app.run()
+    with _run_single_instance():
+        app = ChirpApp(verbose=args.verbose)
+        app.run()
 
 
 def _run_smoke_check(*, verbose: bool = False) -> None:

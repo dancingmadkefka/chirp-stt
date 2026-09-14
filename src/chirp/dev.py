@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+from ctypes import wintypes
 import os
 import signal
 import subprocess
@@ -85,18 +86,25 @@ def _dev_singleton():
         yield
         return
 
-    kernel32 = ctypes.windll.kernel32
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [
+        wintypes.LPVOID,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     mutex = kernel32.CreateMutexW(None, False, DEV_MUTEX_NAME)
     if not mutex:
-        raise OSError("chirp-dev: failed to create singleton mutex")
-    if kernel32.GetLastError() == 183:
+        raise ctypes.WinError(ctypes.get_last_error())
+    if ctypes.get_last_error() == 183:
         kernel32.CloseHandle(mutex)
         raise SystemExit("chirp-dev: another dev runner is already active")
 
     try:
         yield
     finally:
-        kernel32.ReleaseMutex(mutex)
         kernel32.CloseHandle(mutex)
 
 

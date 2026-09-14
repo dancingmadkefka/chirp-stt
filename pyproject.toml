@@ -13,8 +13,11 @@ dependencies = [
     "keyboard>=0.13.5",
     "numpy>=2.3.4",
     "onnx-asr[cpu,hub]>=0.7.0",
+    "pillow>=11.0",
     "platformdirs>=4.5.0",
     "pyperclip>=1.11.0",
+    "pystray>=0.19",
+    "pywin32>=311",
     "rich>=14.2.0",
     "sounddevice>=0.5.3",
 ]
@@ -24,11 +27,19 @@ chirp = "chirp.main:main"
 chirp-dev = "chirp.dev:main"
 chirp-setup = "chirp.setup:main"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/chirp"]
 
 [tool.hatch.build.targets.wheel.package-data]
-"chirp" = ["assets/*.wav"]
+"chirp" = ["assets/*.wav", "assets/*.ico"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/chirp", "README.md", "pyproject.toml", "uv.lock"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

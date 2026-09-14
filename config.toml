@@ -1,8 +1,10 @@
+preferred_mic = ""                             # Optional input-device substring; falls back to the system default.
+audio_capture_mode = "on_demand"                # "on_demand" opens the mic only while recording (recommended for Bluetooth headsets); "always_open" keeps it open to reduce toggle latency.
 primary_shortcut = "ctrl+shift"                 # Hotkey that toggles recording; any combination supported by the `keyboard` library works (e.g. "ctrl+shift+space").
 stt_backend = "parakeet"                        # Only "parakeet" is bundled today, but keeping this key lets us add more backends later if needed.
 parakeet_model = "nemo-parakeet-tdt-0.6b-v3"    # Deployed ONNX bundle name; keep as-is unless new models are added.
 parakeet_quantization = "int8"                      # Set to "int8" to download/use the quantized model variant; leave blank for default fp16.
-onnx_providers = "cpu"                          # ONNX runtime provider string (comma- or pipe-separated if your build supports multiple providers, e.g. "cuda" or "cpu|dml").
+onnx_providers = "cpu"                          # Chirp currently supports CPU inference only.
 threads = 0                                     # 0 (or empty) lets ONNX decide; set a positive integer to pin thread usage.
 language = "en"                                 # Optional ISO language code; leave blank to let Parakeet auto-detect.
 post_processing = ""                            # Text prompt for the StyleGuide; see docs/post_processing_style_guide.md (e.g. "sentence case", "prepend: >>", "append: — dictated with Chirp").
@@ -14,6 +16,7 @@ audio_feedback_volume = 0.25                    # Volume for audio feedback as a
 start_sound_path = ""                           # Leave blank to use bundled asset; default: src/chirp/assets/ping-up.wav
 stop_sound_path = ""                            # Leave blank to use bundled asset; default: src/chirp/assets/ping-down.wav
 max_recording_duration = 45.0                   # Automatic stop recording after X seconds (default: 45s).
+model_timeout = 0                               # 0 = keep model loaded (no unload); >0 = unload after that many seconds idle.
 
 # Word overrides map spoken tokens (case-insensitive) to replacement text.
 [word_overrides]

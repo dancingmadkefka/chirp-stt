@@ -44,19 +44,17 @@ class AudioFeedback:
         # Enable if desired AND at least one backend is available
         self._enabled = enabled and (self._has_sounddevice or self._has_winsound)
 
-        # Prefer sounddevice when volume control is needed, otherwise prefer winsound on Windows
-        # (winsound is built-in and doesn't require PortAudio)
-        if self._volume < 1.0:
-            if self._has_sounddevice:
-                self._use_sounddevice = True
-            else:
-                self._use_sounddevice = False
+        # Prefer sounddevice when available so volume handling and tests use the
+        # same WAV loading path on every platform.  Fall back to winsound on
+        # Windows when sounddevice/numpy are unavailable.
+        if self._has_sounddevice:
+            self._use_sounddevice = True
+        else:
+            self._use_sounddevice = False
+            if self._volume < 1.0 and self._has_winsound:
                 self._logger.warning(
                     "Volume control requires sounddevice; audio will play at system volume"
                 )
-        else:
-            # At full volume, prefer winsound on Windows for reliability
-            self._use_sounddevice = not self._has_winsound and self._has_sounddevice
 
         if self._enabled:
             backend = "sounddevice" if self._use_sounddevice else "winsound"
@@ -132,7 +130,7 @@ class AudioFeedback:
     def _load_and_cache(self, path: Path, key: str) -> Any:
         if self._use_sounddevice:
             # Load as numpy array for volume-controlled playback via sounddevice
-            with wave.open(str(path), "rb") as wf:
+            with wave.open(path.as_posix(), "rb") as wf:
                 samplerate = wf.getframerate()
                 channels = wf.getnchannels()
                 frames = wf.readframes(wf.getnframes())

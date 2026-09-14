@@ -9,7 +9,23 @@ from typing import Callable, Optional, Sequence
 
 import numpy as np
 import onnx_asr
-from onnx_asr.loader import ModelFileNotFoundError, ModelPathNotFoundError
+
+try:
+    from onnx_asr.utils import (
+        ModelFileNotFoundError,
+        ModelPathNotDirectoryError,
+        NoModelNameOrPathSpecifiedError,
+    )
+
+    MODEL_NOT_PREPARED_ERRORS = (
+        ModelFileNotFoundError,
+        ModelPathNotDirectoryError,
+        NoModelNameOrPathSpecifiedError,
+    )
+except ImportError:  # pragma: no cover - compatibility with older onnx-asr
+    from onnx_asr.loader import ModelFileNotFoundError, ModelPathNotFoundError
+
+    MODEL_NOT_PREPARED_ERRORS = (ModelPathNotFoundError, ModelFileNotFoundError)
 
 try:
     import onnxruntime as ort
@@ -34,7 +50,7 @@ class ParakeetManager:
         threads: Optional[int],
         logger: logging.Logger,
         model_dir: Path,
-        timeout: float = 300.0,
+        timeout: float = 0.0,
         loading_state_callback: Optional[Callable[[bool], None]] = None,
     ) -> None:
         self._logger = logger
@@ -55,8 +71,7 @@ class ParakeetManager:
             self._monitor_thread.start()
 
     def _monitor_loop(self) -> None:
-        while not self._stop_monitor.is_set():
-            time.sleep(5)
+        while not self._stop_monitor.wait(5.0):
             with self._lock:
                 should_unload = (
                     self._model is not None
@@ -79,6 +94,15 @@ class ParakeetManager:
                 self._logger.info("Reloading Parakeet model...")
                 self._model = self._load_model()
             return self._model
+
+    def close(self) -> None:
+        """Stop background maintenance and release the model."""
+        self._stop_monitor.set()
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=1.0)
+        with self._lock:
+            self._model = None
+        gc.collect()
 
     def _resolve_providers(self, key: str) -> Sequence[str]:
         normalized = key.lower()
@@ -121,7 +145,7 @@ class ParakeetManager:
                 providers=self._providers,
                 sess_options=self._session_options,
             )
-        except (ModelPathNotFoundError, ModelFileNotFoundError) as exc:
+        except MODEL_NOT_PREPARED_ERRORS as exc:
             raise ModelNotPreparedError(
                 f"Model not found at {self._model_dir} — run: uv run chirp-setup"
             ) from exc

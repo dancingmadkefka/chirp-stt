@@ -1,3 +1,3 @@
 @echo off
-cd /d %USERPROFILE%\chirp-stt
+cd /d "%~dp0"
 uv run chirp-dev %*

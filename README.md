@@ -1,110 +1,94 @@
-# Chirp-STT
+# Chirp STT
 
-Chirp is a Windows dictation app that runs fully locally using ParakeetV3 STT and is managed end-to-end with `uv`. Chirp does not require the ability to run executable files (like .exe) on Windows. It was designed so that if you're allowed to run Python on your machine, you can run Chirp. 
-
-## Why ParakeetV3? 
-
-ParakeetV3 has indistinguishable accuracy from Whisper-large-V3 (multilingual WER 4.91 vs 5.05) but is 17x faster and only requires a CPU while Whisper models of comparable accuracy require GPU's. 
-
-https://huggingface.co/spaces/hf-audio/open_asr_leaderboard
-
-## Goals
-- Provide fast, reliable, local-first dictation on Windows.
-- GPU not needed or wanted.
-- Corporate environment friendly - NO NEW EXECUTABLES (.exe) REQUIRED. If you can run python you can run chirp.
+Chirp is a local Windows dictation app powered by NVIDIA Parakeet TDT 0.6B v3.
+Press a global shortcut, speak, and press it again to insert the transcription
+into the application that has focus. Audio and transcription stay on the PC.
 
 ## Features
-- Local STT via Parakeet TDT 0.6B v3 with optional int8 quantization.
-- Global hotkey to toggle capture, clipboard paste injection, and configurable word overrides.
-- Optional audio feedback cues, top-center recording overlay, and style prompting for post-processed text.
-- CPU support by default with optional GPU providers when available.
 
-## Architecture
-- `src/chirp/main.py` — CLI entrypoint and application loop.
-- `src/chirp/config_manager.py` — configuration loading and Windows-specific paths.
-- `src/chirp/parakeet_manager.py` — Parakeet backend integration and provider handling.
-- `src/chirp/setup.py` — one-time setup routine that prepares local model assets.
+- CPU-only Parakeet inference with optional INT8 quantization
+- Configurable global shortcut and microphone preference
+- Direct typing or clipboard paste
+- Audio cues and a small recording overlay
+- Tray controls with visible recording and error states
+- Native sample-rate negotiation and fallback across Windows audio endpoints
+- Background startup through `pythonw.exe`, with duplicate-instance protection
+- Optional model unloading after an idle timeout
 
-## Setup (Windows, uv-only)
-1. Clone the repository to your user folder:
-   ```powershell
-   cd ~
-   git clone https://github.com/Whamp/chirp.git chirp-stt
-   cd chirp-stt
-   uv run python -m chirp.setup   # one-time setup and model downloading
-   ```
+## Install
 
-2. (Optional) Add `chirp` command to your PATH for convenience:
-   
-   The repository includes a `chirp.bat` file that lets you run Chirp from anywhere by just typing `chirp`. This uses a batch file instead of PowerShell scripts, which works on corporate systems that block unsigned scripts.
-   
-   To enable it:
-   1. Open **System Properties** → **Environment Variables** (search "environment" in Start menu)
-   2. Under **User variables**, select `Path` and click **Edit**
-   3. Click **New** and add: `%USERPROFILE%\chirp-stt`
-   4. Click **OK** to save, then open a new terminal
-   
-   Now you can type `chirp` from any directory.
+Chirp requires Windows, Python 3.12 or newer, and
+[uv](https://docs.astral.sh/uv/).
 
-## Running
-- If you set up the PATH alias:
-  ```powershell
-  chirp
-  chirp-dev
-  chirp --verbose
-  chirp --help
-  ```
-- Or run directly from the chirp-stt directory:
-  ```powershell
-  uv run python -m chirp.main
-  ```
-- Development mode with automatic restart on source/config changes:
-  ```powershell
-  uv run chirp-dev
-  uv run chirp-dev -- --verbose
-  ```
-- Verbose/debug logging:
-  ```powershell
-  uv run python -m chirp.main -- --verbose
-  ```
-- CLI help and options:
-  ```powershell
-  uv run python -m chirp.main -- --help
-  ```
-## Customization
-
-- The config.toml has sensible defaults but is fully customizable.
-- config.toml also allows for word_overrides ie. parra keet -> parakeet
-  config.toml:
+```powershell
+git clone https://github.com/dancingmadkefka/chirp-stt.git
+cd chirp-stt
+uv sync
+uv run chirp-setup
 ```
-primary_shortcut = "ctrl+shift"                 # Hotkey that toggles recording; any combination supported by the `keyboard` library works (e.g. "ctrl+shift+space").
-stt_backend = "parakeet"                        # Only "parakeet" is bundled today, but keeping this key lets us add more backends later if needed.
-parakeet_model = "nemo-parakeet-tdt-0.6b-v3"    # Deployed ONNX bundle name; keep as-is unless new models are added.
-parakeet_quantization = ""                      # Set to "int8" to download/use the quantized model variant; leave blank for default fp16.
-onnx_providers = "cpu"                          # ONNX runtime provider string (comma- or pipe-separated if your build supports multiple providers, e.g. "cuda" or "cpu|dml").
-threads = 0                                     # 0 (or empty) lets ONNX decide; set a positive integer to pin thread usage.
-language = "en"                                 # Optional ISO language code; leave blank to let Parakeet auto-detect.
-post_processing = ""                            # Text prompt for the StyleGuide; see docs/post_processing_style_guide.md (e.g. "sentence case", "prepend: >>", "append: — dictated with Chirp").
-injection_mode = "type"                         # "type" writes characters directly; "paste" uses clipboard + paste shortcut.
-paste_mode = "ctrl"                             # Paste shortcut: "ctrl" -> Ctrl+V, "ctrl+shift" -> Ctrl+Shift+V. Useful with injection_mode = "paste".
-clipboard_behavior = true                       # Keeps clipboard history clean when true by clearing it after `clipboard_clear_delay` seconds.
-clipboard_clear_delay = 0.75                    # Seconds to wait before clearing the clipboard (only if `clipboard_behavior` is true).
-audio_feedback = true                           # Enables start/stop chime playback.
-recording_overlay = true                        # Shows a small always-on-top overlay while recording.
-start_sound_path = ""                           # Leave blank to use bundled asset; default: src/chirp/assets/ping-up.wav
-stop_sound_path = ""                            # Leave blank to use bundled asset; default: src/chirp/assets/ping-down.wav
 
-# Word overrides map spoken tokens (case-insensitive) to replacement text.
+Start Chirp:
+
+```powershell
+uv run chirp
+```
+
+`Ctrl+Shift` starts and stops recording by default. Use `--verbose` during
+setup or troubleshooting.
+
+## Configuration
+
+`config.toml` contains shared defaults. Put machine-specific settings in
+`config.local.toml`; it is ignored by Git and overrides the shared file. Word
+overrides from both files are combined.
+
+```toml
+preferred_mic = "Desk microphone"
+audio_capture_mode = "on_demand"
+primary_shortcut = "ctrl+shift"
+parakeet_quantization = "int8"
+threads = 0
+language = "en"
+injection_mode = "type"
+audio_feedback = true
+recording_overlay = true
+max_recording_duration = 45.0
+model_timeout = 0
+
 [word_overrides]
-parrakeat = "parakeet"
-"parra keat" = "parakeet"  
+"parra keet" = "Parakeet"
 ```
 
-## Removal
-- Delete the cloned `chirp` directory.
-- That's it. 
+`preferred_mic` is a case-insensitive substring. Chirp tries matching endpoints
+in a stable order and falls back to the system default. `on_demand` releases
+the microphone between recordings; `always_open` keeps it active to reduce
+toggle latency.
 
-### Acknowledgments
+The post-processing rules supported by `post_processing` are documented in
+[docs/post_processing_style_guide.md](docs/post_processing_style_guide.md).
 
-- NVIDA - https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
-- Ilya Stupakov - https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx
+## Background startup
+
+Launch `.venv\Scripts\pythonw.exe` with `main.py` as its argument to run Chirp
+without a console window. See [SETUP.md](SETUP.md) for the Windows Startup
+shortcut and troubleshooting steps.
+
+Background logs are written to `%USERPROFILE%\.chirp\chirp.log` and rotate
+automatically. Raw transcriptions are logged only when verbose logging is
+enabled.
+
+## Development
+
+```powershell
+uv run pytest
+uv run chirp-dev -- --verbose
+```
+
+`chirp-dev` restarts the app when Python or TOML files change.
+
+## Credits
+
+- [NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+- [ONNX conversion by Ilya Stupakov](https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx)
+
+Chirp is licensed under the [MIT License](LICENSE).

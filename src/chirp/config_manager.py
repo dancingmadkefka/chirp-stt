@@ -11,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ASSETS_ROOT = PROJECT_ROOT / "src" / "chirp" / "assets"
 MODELS_ROOT = ASSETS_ROOT / "models"
 CONFIG_PATH = PROJECT_ROOT / "config.toml"
+LOCAL_CONFIG_PATH = PROJECT_ROOT / "config.local.toml"
 
 MAX_ALLOWED_DURATION = 7200.0  # 2 hours
 
@@ -30,8 +31,10 @@ class ChirpConfig:
     paste_mode: str = "ctrl"
     clipboard_behavior: bool = True
     clipboard_clear_delay: float = 0.75
-    model_timeout: float = 300.0
+    model_timeout: float = 0.0
     audio_feedback: bool = True
+    preferred_mic: str = ""
+    audio_capture_mode: str = "on_demand"
     audio_feedback_volume: float = 1.0
     recording_overlay: bool = True
     start_sound_path: Optional[str] = None
@@ -55,6 +58,12 @@ class ChirpConfig:
             merged["paste_mode"] = str(merged["paste_mode"]).lower()
         if "onnx_providers" in merged:
             merged["onnx_providers"] = str(merged["onnx_providers"]).lower()
+        if "preferred_mic" in merged:
+            merged["preferred_mic"] = str(merged["preferred_mic"])
+        if "audio_capture_mode" in merged:
+            merged["audio_capture_mode"] = (
+                str(merged["audio_capture_mode"]).lower().replace("-", "_")
+            )
 
         quant = merged.get("parakeet_quantization")
         if quant is not None:
@@ -93,6 +102,12 @@ class ChirpConfig:
         if self.model_timeout < 0:
             raise ValueError(f"model_timeout must be non-negative, got {self.model_timeout}")
 
+        if self.audio_capture_mode not in ("on_demand", "always_open"):
+            raise ValueError(
+                "audio_capture_mode must be 'on_demand' or 'always_open', "
+                f"got {self.audio_capture_mode!r}"
+            )
+
         if self.max_recording_duration < 0:
             raise ValueError(
                 f"max_recording_duration must be non-negative, got {self.max_recording_duration}"
@@ -127,6 +142,7 @@ class ChirpConfig:
 class ConfigManager:
     def __init__(self) -> None:
         self._config_path = CONFIG_PATH
+        self._local_config_path = LOCAL_CONFIG_PATH
         self._models_root = MODELS_ROOT
         self._models_root.mkdir(parents=True, exist_ok=True)
 
@@ -138,6 +154,10 @@ class ConfigManager:
     def models_root(self) -> Path:
         return self._models_root
 
+    @property
+    def local_config_path(self) -> Path:
+        return self._local_config_path
+
     def ensure_exists(self) -> None:
         if not self._config_path.exists():
             raise FileNotFoundError(f"Config file not found at {self._config_path}")
@@ -146,6 +166,14 @@ class ConfigManager:
         self.ensure_exists()
         with self._config_path.open("rb") as handle:
             data = tomllib.load(handle)
+        if self._local_config_path.is_file():
+            with self._local_config_path.open("rb") as handle:
+                local_data = tomllib.load(handle)
+            base_overrides = data.get("word_overrides", {}) or {}
+            local_overrides = local_data.pop("word_overrides", {}) or {}
+            data.update(local_data)
+            if base_overrides or local_overrides:
+                data["word_overrides"] = {**base_overrides, **local_overrides}
         config = ChirpConfig.from_dict(data)
         config.validate()
         return config
